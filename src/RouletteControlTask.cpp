@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <unit_rolleri2c.hpp>
 #include <unit_roller485.hpp>
+#include "UnitRollerWrapper.h"
 #include "RouletteCalc.h"
 #include "XSafeVariable.h"
 #include <cmath>
@@ -38,7 +39,7 @@ namespace
   ////////////////////////////////////////////////////////////////////////////////
   // 定数
   ////////////////////////////////////////////////////////////////////////////////
-  static constexpr unsigned long CONTROL_PERIOD_MS = 5;                           // 制御周期 10ms
+  static constexpr unsigned long CONTROL_PERIOD_MS = 5;                           // 制御周期[ms]
   static constexpr float CONTROL_PERIOD_SEC = (float)CONTROL_PERIOD_MS / 1000.0f; // 制御周期[秒]
   static constexpr uint8_t ROLLER_I2C_ADDR = 0x64;
   static constexpr uint8_t I2C_SDA_PIN = 2;
@@ -64,7 +65,7 @@ namespace
   NullStream _nullStream;
   Stream *_serial = &_nullStream;
 
-  UnitRollerI2C _roller;
+  UnitRollerWrapper _roller;
   // トリガーセンサー1
   DigitalIn _triggerSensor1(5, INPUT_PULLUP);
   DigitalInWatcher _triggerSensor1Watcher(_triggerSensor1, false);
@@ -121,55 +122,6 @@ namespace
     serial->write((const uint8_t *)buf, len);
   }
 
-  /// @brief Rollerから電源電圧[V]を取得するヘルパー関数
-  float getRollerVinV()
-  {
-    const int32_t vin = _roller.getVin(); // 電源電圧[10mV]
-    return (float)vin / 100.0f;
-  }
-
-  /// @brief Rollerに電流指示値[A]を設定するヘルパー関数
-  void setRollerTargetCurrentA(float targetCurrentA)
-  {
-    const int32_t current = static_cast<int32_t>(std::roundf(targetCurrentA * 100000.0f)); // 電流指示値[0.01m
-    _roller.setCurrent(current);
-  }
-
-  /// @brief Rollerから電流フィードバック値[A]を取得するヘルパー関数
-  float getRollerCurrentA()
-  {
-    const int32_t current = _roller.getCurrentReadback(); // 電流フィードバック値[0.01mA]
-    return (float)current / 100000.0f;
-  }
-
-  /// @brief Rollerに速度指示値[rpm]を設定するヘルパー関数
-  void setRollerTargetSpeedRpm(float targetSpeedRpm)
-  {
-    const int32_t speed = static_cast<int32_t>(std::roundf(targetSpeedRpm * 100.0f)); // 速度指示値[0.01rpm]
-    _roller.setSpeed(speed);
-  }
-
-  /// @brief Rollerから速度フィードバック値[rpm]を取得するヘルパー関数
-  float getRollerSpeedRpm()
-  {
-    const int32_t speed = _roller.getSpeedReadback(); // 速度フィードバック値[0.01rpm]
-    return (float)speed / 100.0f;
-  }
-
-  /// @brief Rollerに位置指示値[rev]を設定するヘルパー関数
-  void setRollerTargetPosRev(float targetPosRev)
-  {
-    const int32_t pos = static_cast<int32_t>(std::roundf(targetPosRev * (float)ROULETTE_ONE_REVOLUTION)); // 位置指示値[0.01deg]
-    _roller.setPos(pos);
-  }
-
-  /// @brief Rollerから位置フィードバック値[rev]を取得するヘルパー関数
-  float getRollerPosRev()
-  {
-    const int32_t pos = _roller.getPosReadback(); // 位置フィードバック値[0.01deg]
-    return (float)pos / (float)ROULETTE_ONE_REVOLUTION;
-  }
-
   /// @brief Speed PIDのパラメータ更新が保留されている場合にローラーに適用する
   void applyPendingSpeedPidToRoller()
   {
@@ -183,50 +135,30 @@ namespace
       params = locked->params;
       locked->pending = false;
     }
-
-    const float kp = params.kp;
-    const float ki = params.ki;
-    const float kd = params.kd;
-
-    const float kpNonNegative = kp < 0.0f ? 0.0f : kp;
-    const float kiNonNegative = ki < 0.0f ? 0.0f : ki;
-    const float kdNonNegative = kd < 0.0f ? 0.0f : kd;
-
-    static constexpr float SPEED_PID_P_SCALE = 100000.0f;
-    static constexpr float SPEED_PID_I_SCALE = 10000000.0f;
-    static constexpr float SPEED_PID_D_SCALE = 100000.0f;
-    const uint32_t p = static_cast<uint32_t>(std::roundf(kpNonNegative * SPEED_PID_P_SCALE));
-    const uint32_t i = static_cast<uint32_t>(std::roundf(kiNonNegative * SPEED_PID_I_SCALE));
-    const uint32_t d = static_cast<uint32_t>(std::roundf(kdNonNegative * SPEED_PID_D_SCALE));
-
-    _roller.setSpeedPID(p, i, d);
+    _roller.setSpeedPID(params.kp, params.ki, params.kd);
   }
 
-  // ルーレット速度制御モードでの制御ステップ
+  /// @brief ルーレット速度制御モードでの制御ステップ
   void controlStepRouletteSpeedMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
   {
-    static int32_t _lastPos = 0;
+    static float _lastPosRev = 0;
     if (stepCount == 0)
     {
       // モード変更直後の初期化処理
       _roller.setOutput(0);
       _roller.setMode(ROLLER_MODE_SPEED);
       applyPendingSpeedPidToRoller();
-      _roller.setSpeed(0);
+      _roller.setTargetSpeedRpm(0.0f);
       _roller.setOutput(1);
-      _lastPos = _roller.getPosReadback();
+      _lastPosRev = _roller.getPosRev();
     }
-    const int32_t pos = _roller.getPosReadback();         // 位置フィードバック値[0.01deg]
-    const int32_t speed = _roller.getSpeedReadback();     // 速度フィードバック値[0.01rpm]
-    const int32_t current = _roller.getCurrentReadback(); // 電流フィードバック値[0.01mA]
-    const int32_t vin = _roller.getVin();                 // 電源電圧[10mV]
+    _posRev = _roller.getPosRev();
+    _speedRpm = _roller.getSpeedRpm();
+    _currentA = _roller.getCurrentA();
+    _vinV = _roller.getVinV();
 
-    const int32_t posDiff = pos - _lastPos;
-    _posRev = (float)pos / (float)ROULETTE_ONE_REVOLUTION;                                                                   // 位置フィードバック値[rev]
-    _speedRpm = (float)speed / 100.0f;                                                                                       // 速度フィードバック値[rpm]
-    const float speedCalcRpm = (float)posDiff / (float)ROULETTE_ONE_REVOLUTION * 60.0f * 1000.0f / (float)CONTROL_PERIOD_MS; // (位置フィードバック値から計算)
-    _currentA = (float)current / 100000.0f;                                                                                  // 電流フィードバック値[A]
-    _vinV = (float)vin / 100.0f;
+    const float posDiffRev = _posRev - _lastPosRev;
+    const float speedCalcRpm = posDiffRev * 60.0f / CONTROL_PERIOD_SEC; // (位置フィードバック値から計算)
     const bool serialOutputEnabled = _serialOutputEnabled;
 
     _triggerSensor1Watcher.update();
@@ -244,7 +176,7 @@ namespace
       targetPosRev = 0;
       trigger1Time = 0;
       trigger2Time = 0;
-      _roller.setSpeed(static_cast<int32_t>(_targetSpeedRpm * 100));
+      _roller.setTargetSpeedRpm(_targetSpeedRpm);
       if (_startSwitchWatcher.isFallingEdge())
       {
         // スタートスイッチが押されたら加速開始
@@ -258,13 +190,13 @@ namespace
       {
         // 目標速度に向けて徐々に加速する
         _targetSpeedRpm = _targetSpeedRpm + ((float)ROULETTE_ACCELERATION_RPM_PER_S * CONTROL_PERIOD_SEC);
-        _roller.setSpeed(static_cast<int32_t>(_targetSpeedRpm * 100));
+        _roller.setTargetSpeedRpm(_targetSpeedRpm);
       }
       else
       {
         // 目標速度に達したら、次の状態へ移行
         _targetSpeedRpm = ROULETTE_SPEED_RPM;
-        _roller.setSpeed(static_cast<int32_t>(_targetSpeedRpm * 100));
+        _roller.setTargetSpeedRpm(_targetSpeedRpm);
         _controlState = ControlState::WAITING_TRIGGER1;
       }
     }
@@ -294,7 +226,7 @@ namespace
       if (t0 >= targetTime)
       {
         // 目標時間に達したら減速開始
-        _roller.setSpeed(static_cast<int32_t>(_targetSpeedRpm * 100));
+        _roller.setTargetSpeedRpm(_targetSpeedRpm);
         _controlState = ControlState::DECELERATING;
       }
       else
@@ -320,7 +252,7 @@ namespace
           rpm = 0;
         }
         _targetSpeedRpm = rpm;
-        _roller.setSpeed(static_cast<int32_t>(_targetSpeedRpm * 100));
+        _roller.setTargetSpeedRpm(_targetSpeedRpm);
       }
     }
     if (_controlState == ControlState::DECELERATING)
@@ -333,7 +265,7 @@ namespace
         rpm = 0;
       }
       _targetSpeedRpm = rpm;
-      _roller.setSpeed(static_cast<int32_t>(_targetSpeedRpm * 100));
+      _roller.setTargetSpeedRpm(_targetSpeedRpm);
       if (_targetSpeedRpm <= 0)
       {
         _controlState = ControlState::IDLE;
@@ -363,15 +295,15 @@ namespace
       //           "%.2f,", _targetSpeedRpm,
       //           "%.2f\r\n", targetPosRev);
     }
-    _lastPos = pos;
+    _lastPosRev = _posRev;
   }
 
-  // ルーレット電流制御モードでの制御ステップ
+  // @brief ルーレット電流制御モードでの制御ステップ
   void controlStepRouletteCurrentMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
   {
   }
 
-  // 電流制御モードでの制御ステップ
+  // @brief 電流制御モードでの制御ステップ
   void controlStepDirectCurrentMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
   {
     if (stepCount == 0)
@@ -379,13 +311,13 @@ namespace
       // モード変更直後の初期化処理
       _roller.setOutput(0);
       _roller.setMode(ROLLER_MODE_CURRENT);
-      _roller.setCurrent(0);
+      _roller.setTargetCurrentA(0.0f);
       _roller.setOutput(1);
     }
-    _vinV = getRollerVinV();         // 電源電圧[V]
-    _currentA = getRollerCurrentA(); // 電流フィードバック値[A]
-    _speedRpm = getRollerSpeedRpm();   // 速度フィードバック値[rpm]
-    setRollerTargetCurrentA(_targetCurrentA); // 電流指令値[A]をローラーに設定
+    _vinV = _roller.getVinV();
+    _currentA = _roller.getCurrentA();
+    _speedRpm = _roller.getSpeedRpm();
+    _roller.setTargetCurrentA(_targetCurrentA);
     if (_serialOutputEnabled)
     {
       logPrintf(_serial,
@@ -397,17 +329,17 @@ namespace
     }
   }
 
-  // 速度制御モードでの制御ステップ
+  // @brief 速度制御モードでの制御ステップ
   void controlStepDirectSpeedMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
   {
   }
 
-  // 位置制御モードでの制御ステップ
+  // @brief 位置制御モードでの制御ステップ
   void controlStepDirectPositionMode(unsigned long t0, unsigned long _dt, unsigned long stepCount)
   {
   }
 
-  // タスクで一定周期ごとに実行される関数
+  // @brief タスクで一定周期ごとに実行される関数
   void controlStep(void *pvParameters)
   {
     static unsigned long _stepCount = 0;
@@ -451,7 +383,7 @@ namespace
     _dt = t1 - t0;
   }
 
-  // タスクで実行される関数
+  // @brief タスクで実行される関数
   void controlTask(void *pvParameters)
   {
     TickType_t lastWakeTime = xTaskGetTickCount();
@@ -461,7 +393,6 @@ namespace
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(CONTROL_PERIOD_MS));
     }
   }
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
