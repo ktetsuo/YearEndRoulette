@@ -53,7 +53,17 @@ public:
     _array[_len] = c;
     _len++;
     _array[_len] = '\0';
-    return false;
+    return true;
+  }
+  bool backspace()
+  {
+    if (isEmpty())
+    {
+      return false;
+    }
+    _len--;
+    _array[_len] = '\0';
+    return true;
   }
   std::size_t append(const char *s, std::size_t len)
   {
