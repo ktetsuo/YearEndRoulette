@@ -36,13 +36,14 @@ public:
             {
                 _buf.append(static_cast<char>(c));
             }
-            // コマンドの区切り
-            if (c == '\r')
+            // バックスペースで最後の文字を消す
+            else if (c == '\b' && !_buf.isEmpty())
             {
-                if (_echo)
-                {
-                    _serial.println();
-                }
+              _buf.backspace();
+            }
+            // コマンドの区切り
+            else if (c == '\r')
+            {
                 const bool processed = proccessCommand();
                 if (!processed)
                 {
