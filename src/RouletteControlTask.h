@@ -31,11 +31,7 @@ namespace RouletteControlTask
 
   void start(Stream &serial);
 
-  /// @brief 停止目標の絶対角度を設定する
-  /// @param targetAngle 1回転内の目標絶対角度 [0.01deg] (0~35999, 例: 9000 = 90度)
-  void setTargetAngle(int32_t targetAngle);
-
-  /// @brief 速度PIDのPゲインを設定する
+  /// @brief 速度PIDのゲインを設定する
   void setSpeedPid(float kp, float ki, float kd);
 
   /// @brief 速度PIDのPゲインを設定する
@@ -45,7 +41,7 @@ namespace RouletteControlTask
   /// @brief 速度PIDのDゲインを設定する
   void setSpeedPidKd(float kd);
 
-  /// @brief 速度PIDのPゲインを取得する
+  /// @brief 速度PIDのゲインを取得する
   void getSpeedPid(float &kp, float &ki, float &kd);
 
   /// @brief 速度PIDのPゲインを取得する
@@ -54,6 +50,27 @@ namespace RouletteControlTask
   float getSpeedPidKi();
   /// @brief 速度PIDのDゲインを取得する
   float getSpeedPidKd();
+
+  /// @brief 位置PIDのゲインを設定する
+  void setPosPid(float kp, float ki, float kd);
+
+  /// @brief 位置PIDのPゲインを設定する
+  void setPosPidKp(float kp);
+  /// @brief 位置PIDのIゲインを設定する
+  void setPosPidKi(float ki);
+  /// @brief 位置PIDのDゲインを設定する
+  void setPosPidKd(float kd);
+
+  /// @brief 位置PIDのゲインを取得する
+  void getPosPid(float &kp, float &ki, float &kd);
+
+  /// @brief 位置PIDのPゲインを取得する
+  float getPosPidKp();
+  /// @brief 位置PIDのIゲインを取得する
+  float getPosPidKi();
+  /// @brief 位置PIDのDゲインを取得する
+  float getPosPidKd();
+
 
   /// @brief RouletteControlTaskの定期シリアル出力を有効/無効にする
   void setSerialOutputEnabled(bool enabled);
@@ -80,6 +97,10 @@ namespace RouletteControlTask
   void setTargetCurrentA(float current);
   /// @brief 電流指示を取得する [A]
   float getTargetCurrentA();
+  /// @brief 目標角度を設定する [rev]
+  void setTargetAngleRev(float angleRev);
+  /// @brief 目標角度を取得する [rev]
+  float getTargetAngleRev();
 
   /// @brief 制御モードを設定する
   void setControlMode(ControlMode mode);

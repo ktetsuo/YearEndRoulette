@@ -85,6 +85,24 @@ public:
     _array[_len] = '\0';
     return i;
   }
+  bool startsWith(const char *prefix) const
+  {
+    std::size_t prefixLen = std::strlen(prefix);
+    if (prefixLen > _len)
+    {
+      return false;
+    }
+    return std::strncmp(_array.data(), prefix, prefixLen) == 0;
+  }
+  bool endsWith(const char *suffix) const
+  {
+    std::size_t suffixLen = std::strlen(suffix);
+    if (suffixLen > _len)
+    {
+      return false;
+    }
+    return std::strncmp(_array.data() + _len - suffixLen, suffix, suffixLen) == 0;
+  }
 };
 
 #endif // __ARRAYSTRING_H__

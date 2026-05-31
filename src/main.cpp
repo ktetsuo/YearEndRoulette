@@ -5,28 +5,46 @@
 #include "SerialConsole.h"
 #include "ValueCommand.h"
 #include "RotationBuffer.h"
+#include <BleSerial.h>
 #include <array>
 #include <cstdio>
 
 namespace
 {
+  BleSerial _bleSerial;
+
   m5gfx::M5GFX _display;
   m5gfx::M5Canvas _canvas(&_display);
   RotationBuffer<unsigned long, 10> _intervalMsBuffer;
 
   XSafeStream<128> _safeSerial;
-  ValueCommand<float> _cmdSpeedPidKp("spkp", RouletteControlTask::getSpeedPidKp, RouletteControlTask::setSpeedPidKp);
-  ValueCommand<float> _cmdSpeedPidKi("spki", RouletteControlTask::getSpeedPidKi, RouletteControlTask::setSpeedPidKi);
-  ValueCommand<float> _cmdSpeedPidKd("spkd", RouletteControlTask::getSpeedPidKd, RouletteControlTask::setSpeedPidKd);
+  ValueCommand<float> _cmdSpeedPidKp("spdkp", RouletteControlTask::getSpeedPidKp, RouletteControlTask::setSpeedPidKp);
+  ValueCommand<float> _cmdSpeedPidKi("spdki", RouletteControlTask::getSpeedPidKi, RouletteControlTask::setSpeedPidKi);
+  ValueCommand<float> _cmdSpeedPidKd("spdkd", RouletteControlTask::getSpeedPidKd, RouletteControlTask::setSpeedPidKd);
+  ValueCommand<float> _cmdPosPidKp("poskp", RouletteControlTask::getPosPidKp, RouletteControlTask::setPosPidKp);
+  ValueCommand<float> _cmdPosPidKi("poski", RouletteControlTask::getPosPidKi, RouletteControlTask::setPosPidKi);
+  ValueCommand<float> _cmdPosPidKd("poskd", RouletteControlTask::getPosPidKd, RouletteControlTask::setPosPidKd);
   ValueCommand<bool> _cmdControlLog("log", RouletteControlTask::isSerialOutputEnabled, RouletteControlTask::setSerialOutputEnabled);
   ValueCommand<float> _cmdSpeedRpm("spd", RouletteControlTask::getTargetSpeedRpm, RouletteControlTask::setTargetSpeedRpm);
-  ValueCommand<float> _cmdTargetCurrent("cur", RouletteControlTask::getTargetCurrentA, RouletteControlTask::setTargetCurrentA);
+  ValueCommand<float> _cmdTargetCurrentA("cur", RouletteControlTask::getTargetCurrentA, RouletteControlTask::setTargetCurrentA);
+  ValueCommand<float> _cmdTargetAngleRev("ang", RouletteControlTask::getTargetAngleRev, RouletteControlTask::setTargetAngleRev);
   class ControlModeCommand : public IConsoleCommand
   {
   public:
     virtual bool run(const ArrayString<CMD_MAX_LEN> &cmdline, Print &printer) const override
     {
-      if (cmdline == "mode=rs")
+      if (cmdline == "mode=")
+      {
+        printer.printf("Current Control Mode: %s\r\n", RouletteControlTask::controlModeToString(RouletteControlTask::getControlMode()));
+        return true;
+      }
+      if (cmdline == "mode=none")
+      {
+        RouletteControlTask::setControlMode(RouletteControlTask::ControlMode::NONE);
+        printer.printf("Set Control Mode: %s\r\n", RouletteControlTask::controlModeToString(RouletteControlTask::ControlMode::NONE));
+        return true;
+      }
+      else if (cmdline == "mode=rs")
       {
         RouletteControlTask::setControlMode(RouletteControlTask::ControlMode::ROULETTE_SPEED);
         printer.printf("Set Control Mode: %s\r\n", RouletteControlTask::controlModeToString(RouletteControlTask::ControlMode::ROULETTE_SPEED));
@@ -36,6 +54,12 @@ namespace
       {
         RouletteControlTask::setControlMode(RouletteControlTask::ControlMode::ROULETTE_CURRENT);
         printer.printf("Set Control Mode: %s\r\n", RouletteControlTask::controlModeToString(RouletteControlTask::ControlMode::ROULETTE_CURRENT));
+        return true;
+      }
+      else if (cmdline == "mode=dp")
+      {
+        RouletteControlTask::setControlMode(RouletteControlTask::ControlMode::DIRECT_POSITION);
+        printer.printf("Set Control Mode: %s\r\n", RouletteControlTask::controlModeToString(RouletteControlTask::ControlMode::DIRECT_POSITION));
         return true;
       }
       else if (cmdline == "mode=ds")
@@ -59,13 +83,14 @@ namespace
     }
   };
   ControlModeCommand _cmdControlMode;
-  const std::array<const IConsoleCommand *, 7> _commands = {
+  const std::array<const IConsoleCommand *, 8> _commands = {
       &_cmdSpeedPidKp,
       &_cmdSpeedPidKi,
       &_cmdSpeedPidKd,
       &_cmdControlLog,
       &_cmdSpeedRpm,
-      &_cmdTargetCurrent,
+      &_cmdTargetCurrentA,
+      &_cmdTargetAngleRev,
       &_cmdControlMode,
   };
   SerialConsole _console(_safeSerial, _commands);
@@ -105,6 +130,7 @@ void setup() {
 
   Serial.begin(115200);
   _safeSerial.begin(&Serial, 32, "SafeSerial");
+  _bleSerial.begin("YearEndRoulette");
   _safeSerial.println("Start");
   RouletteControlTask::start(_safeSerial);
 }
@@ -150,5 +176,15 @@ void loop() {
   _canvas.printf("%4lu", _intervalMsBuffer);
 
   _canvas.pushSprite(0, 0);
+
+  // BLEで受信したデータをシリアルに出力してエコーする
+  const int bleAvailable = _bleSerial.available();
+  if (bleAvailable > 0)  {
+    uint8_t buf[bleAvailable + 1];
+    _bleSerial.readBytes(buf, bleAvailable);
+    _bleSerial.write(buf, bleAvailable);
+    _safeSerial.write(buf, bleAvailable);
+  }
+
   _intervalMsBuffer.add(millis() - t0);
 }

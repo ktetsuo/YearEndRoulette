@@ -12,6 +12,7 @@
 #include "UnitRollerWrapper.h"
 #include "RouletteCalc.h"
 #include "XSafeVariable.h"
+#include "PID.h"
 #include <cmath>
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -24,15 +25,15 @@ namespace
   ////////////////////////////////////////////////////////////////////////////////
   using RouletteControlTask::ControlMode;
   using RouletteControlTask::ControlState;
-  struct SpeedPidParams
+  struct RollerPidParams
   {
     float kp;
     float ki;
     float kd;
   };
-  struct SpeedPidState
+  struct RollerPidState
   {
-    SpeedPidParams params;
+    RollerPidParams params;
     bool pending;
   };
 
@@ -47,13 +48,26 @@ namespace
   static constexpr uint32_t I2C_FREQ = 100000;
   static constexpr int32_t ROULETTE_SPEED_RPM = 180;              // ルーレットの回転速度[rpm]
   static constexpr int32_t ROULETTE_ACCELERATION_RPM_PER_S = 120; // ルーレットの加速率[rpm/s]
-  static constexpr SpeedPidParams DEFAULT_SPEED_PID_PARAMS = {
+
+  // Rollerの速度制御のPIDの初期ゲイン
+  static constexpr RollerPidParams DEFAULT_SPEED_PID_PARAMS = {
       10.0f, // P
       0.0f,  // I
-      0.5f,  // D
+      0.2f,  // D
   };
-  static constexpr SpeedPidState DEFAULT_SPEED_PID_STATE = {
+  static constexpr RollerPidState DEFAULT_SPEED_PID_STATE = {
       DEFAULT_SPEED_PID_PARAMS,
+      false,
+  };
+
+  // Rollerの位置制御のPIDの初期ゲイン
+  static constexpr RollerPidParams DEFAULT_POS_PID_PARAMS = {
+      10.0f, // P
+      0.0f,  // I
+      0.2f,  // D
+  };
+  static constexpr RollerPidState DEFAULT_POS_PID_STATE = {
+      DEFAULT_POS_PID_PARAMS,
       false,
   };
 
@@ -82,17 +96,21 @@ namespace
   volatile ControlState _controlState = ControlState::IDLE;
   int32_t _targetAngle = 0; // 目標絶対角度[0.01deg] (0~ROULETTE_ONE_REVOLUTION-1)
 
-  XSafeVariable<SpeedPidState> _speedPidState;
-  volatile bool _serialOutputEnabled = true;
-  volatile float _vinV = 0.0f;           // 電源電圧[V]
-  volatile float _targetSpeedRpm = 0;    // 速度指令値[rpm]
-  volatile float _speedRpm = 0.0f;       // 速度フィードバック値[rpm]
-  volatile float _targetCurrentA = 0.0f; // 電流指令値[A]
-  volatile float _currentA = 0.0f;       // 電流フィードバック値[A]
-  volatile float _posRev = 0.0f;         // 位置フィードバック値[rev]
+  XSafeVariable<RollerPidState> _rollerSpeedPidState; // 速度PIDの状態
+  XSafeVariable<RollerPidState> _rollerPosPidState;   // 位置PIDの状態
+  volatile bool _serialOutputEnabled = false;
+  volatile unsigned long _loadTimeUs = 0; // 制御ループの処理時間[us]
+  volatile float _vinV = 0.0f;            // 電源電圧[V]
+  volatile float _targetSpeedRpm = 0;     // 速度指令値[rpm]
+  volatile float _speedRpm = 0.0f;        // 速度フィードバック値[rpm]
+  volatile float _targetCurrentA = 0.0f;  // 電流指令値[A]
+  volatile float _currentA = 0.0f;        // 電流フィードバック値[A]
+  volatile float _posRev = 0.0f;          // 位置フィードバック値[rev]
+  volatile float _targetPosRev = 0.0f;    // ターゲット位置[rev]
+  volatile float _targetAngleRev = 0.0f;  // ターゲット角度[rev]
 
   volatile ControlMode _lastControlMode = ControlMode::NONE;
-  volatile ControlMode _controlMode = ControlMode::ROULETTE_SPEED;
+  volatile ControlMode _controlMode = ControlMode::DIRECT_CURRENT;
 
   ////////////////////////////////////////////////////////////////////////////////
   // 関数
@@ -125,9 +143,9 @@ namespace
   /// @brief Speed PIDのパラメータ更新が保留されている場合にローラーに適用する
   void applyPendingSpeedPidToRoller()
   {
-    SpeedPidParams params = DEFAULT_SPEED_PID_PARAMS;
+    RollerPidParams params = DEFAULT_SPEED_PID_PARAMS;
     {
-      auto locked = _speedPidState.lock();
+      auto locked = _rollerSpeedPidState.lock();
       if (!locked->pending)
       {
         return;
@@ -138,8 +156,64 @@ namespace
     _roller.setSpeedPID(params.kp, params.ki, params.kd);
   }
 
+  /// @brief Position PIDのパラメータ更新が保留されている場合にローラーに適用する
+  void applyPendingPosPidToRoller()
+  {
+    RollerPidParams params = DEFAULT_POS_PID_PARAMS;
+    {
+      auto locked = _rollerPosPidState.lock();
+      if (!locked->pending)      {
+        return;
+      }
+      params = locked->params;
+      locked->pending = false;
+    }
+    _roller.setPosPID(params.kp, params.ki, params.kd);
+  }
+
+  /// @brief 現在の位置に最も近いターゲット位置を計算する
+  /// @param posRev 現在の位置[rev]
+  /// @param targetAngleRev ターゲット角度[rev]
+  /// @return 目標位置[rev]
+  /// @details ターゲット位置は、posRevに最も近い(targetAngleRev + n)の形になる
+  float calcNearestTargetPosRev(float posRev, float targetAngleRev)
+  {
+    float targetFrac = targetAngleRev - std::floor(targetAngleRev); // ターゲット角度の小数部分
+    float posFrac = posRev - std::floor(posRev);                    // 現在位置の小数部分
+    float diff = targetFrac - posFrac;                              // ターゲット角度と現在位置の小数部分の差
+    if (diff > 0.5f)
+    {
+      diff -= 1.0f; // ターゲット角度の方が現在位置より大きい場合、差が0.5を超えるときは逆回りの方が近い
+    }
+    else if (diff < -0.5f)
+    {
+      diff += 1.0f; // ターゲット角度の方が現在位置より小さい場合、差が-0.5を下回るときは逆回りの方が近い
+    }
+    return posRev + diff; // 現在位置に差を加えることで、最も近いターゲット位置を計算
+  }
+
+  /// @brief 制御なしモードでの制御ステップ
+  void controlStepNoneMode(unsigned long t0, unsigned long stepCount)
+  {
+    _roller.setOutput(0);
+    if (_serialOutputEnabled)
+    {
+      logPrintf(_serial,
+                "%lu,", stepCount,
+                "%lu,", t0,
+                "%lu, ", _loadTimeUs,
+                "%d,", _startSwitch.isOn() ? 1 : 0,
+                "%d,", _triggerSensor1.isOn() ? 1 : 0,
+                "%d,", _triggerSensor2.isOn() ? 1 : 0,
+                "%.2f,", _posRev,
+                "%.2f,", _speedRpm,
+                "%.2f,", _currentA,
+                "%.2f\r\n", _vinV);
+    }
+  }
+
   /// @brief ルーレット速度制御モードでの制御ステップ
-  void controlStepRouletteSpeedMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
+  void controlStepRouletteSpeedMode(unsigned long t0, unsigned long stepCount)
   {
     static float _lastPosRev = 0;
     if (stepCount == 0)
@@ -150,12 +224,8 @@ namespace
       applyPendingSpeedPidToRoller();
       _roller.setTargetSpeedRpm(0.0f);
       _roller.setOutput(1);
-      _lastPosRev = _roller.getPosRev();
+      _lastPosRev = _posRev;
     }
-    _posRev = _roller.getPosRev();
-    _speedRpm = _roller.getSpeedRpm();
-    _currentA = _roller.getCurrentA();
-    _vinV = _roller.getVinV();
 
     const float posDiffRev = _posRev - _lastPosRev;
     const float speedCalcRpm = posDiffRev * 60.0f / CONTROL_PERIOD_SEC; // (位置フィードバック値から計算)
@@ -259,7 +329,7 @@ namespace
     {
       // 減速中
       // 0rpmに向けて徐々に減速する
-      float rpm = rpm - ((float)ROULETTE_ACCELERATION_RPM_PER_S * CONTROL_PERIOD_SEC);
+      float rpm = _targetSpeedRpm - ((float)ROULETTE_ACCELERATION_RPM_PER_S * CONTROL_PERIOD_SEC);
       if (rpm < 0)
       {
         rpm = 0;
@@ -274,37 +344,174 @@ namespace
 
     if (serialOutputEnabled)
     {
-      logPrintf(_serial,
-                "%lu, ", dt,
-                "%.4f,", _targetSpeedRpm,
-                "%.4f,", _speedRpm,
-                "%.4f\r\n", _currentA);
       // logPrintf(_serial,
-      //           "%lu,", _stepCount,
-      //           "%lu,", t0,
-      //           "%lu, ", _dt,
-      //           "%d,", _startSwitch.isOn() ? 1 : 0,
-      //           "%d,", _triggerSensor1.isOn() ? 1 : 0,
-      //           "%d,", _triggerSensor2.isOn() ? 1 : 0,
-      //           "%d, ", (int)_controlState,
-      //           "%.2f,", _posRev,
-      //           "%.2f,", _speedRpm,
-      //           "%.2f,", speedCalcRpm,
-      //           "%.2f,", _currentA,
-      //           "%.2f,", _vinV,
-      //           "%.2f,", _targetSpeedRpm,
-      //           "%.2f\r\n", targetPosRev);
+      //           "%lu, ", dt,
+      //           "%.4f,", _targetSpeedRpm,
+      //           "%.4f,", _speedRpm,
+      //           "%.4f\r\n", _currentA);
+      logPrintf(_serial,
+                "%lu,", stepCount,
+                "%lu,", t0,
+                "%lu, ", _loadTimeUs,
+                "%d,", _startSwitch.isOn() ? 1 : 0,
+                "%d,", _triggerSensor1.isOn() ? 1 : 0,
+                "%d,", _triggerSensor2.isOn() ? 1 : 0,
+                "%d, ", (int)_controlState,
+                "%.2f,", _posRev,
+                "%.2f,", _speedRpm,
+                "%.2f,", speedCalcRpm,
+                "%.2f,", _currentA,
+                "%.2f,", _vinV,
+                "%.2f,", _targetSpeedRpm,
+                "%.2f\r\n", targetPosRev);
     }
     _lastPosRev = _posRev;
   }
 
   // @brief ルーレット電流制御モードでの制御ステップ
-  void controlStepRouletteCurrentMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
+  void controlStepRouletteCurrentMode(unsigned long t0, unsigned long stepCount)
   {
+    static float _lastPosRev = 0;
+    static unsigned long _trigger1Time = 0;          // トリガーセンサー1が反応した時間[us]
+    static unsigned long _trigger2Time = 0;          // トリガーセンサー2が反応した時間[us]
+    static unsigned long _triggerTimeDiff = 0;       // トリガーセンサー1と2の反応時間差[us]
+    static float _targettingPosRev = 0;              // ターゲット位置[rev]
+    constexpr unsigned long targettingUsec = 300000; // ターゲット位置に向けて制御する時間[マイクロ秒]
+    static PID _speedPid(
+        DEFAULT_SPEED_PID_PARAMS.kp,
+        DEFAULT_SPEED_PID_PARAMS.ki,
+        DEFAULT_SPEED_PID_PARAMS.kd,
+        CONTROL_PERIOD_SEC,
+        0.0f, // outputMin
+        1.0f, // outputMax
+        0.0f  // targetValue
+    );
+
+    if (stepCount == 0)
+    {
+      // モード変更直後の初期化処理
+      _roller.setOutput(0);
+      _roller.setMode(ROLLER_MODE_CURRENT);
+      _roller.setTargetCurrentA(0.0f);
+      _roller.setOutput(1);
+      _controlState = ControlState::IDLE;
+      _trigger1Time = 0;
+      _trigger2Time = 0;
+      _lastPosRev = _posRev;
+    }
+
+    const float posDiffRev = _posRev - _lastPosRev;
+    const bool serialOutputEnabled = _serialOutputEnabled;
+
+    _triggerSensor1Watcher.update();
+    _triggerSensor2Watcher.update();
+    _startSwitchWatcher.update();
+
+    if (_controlState == ControlState::IDLE)
+    {
+      if (_startSwitchWatcher.isFallingEdge())
+      {
+        // スタートスイッチが押されたら加速開始
+        _controlState = ControlState::ACCELERATING;
+        _targetCurrentA = 0.5f; // とりあえず0.5Aにする
+      }
+    }
+    if (_controlState == ControlState::ACCELERATING)
+    {
+      // 加速中
+      if (std::fabs(_speedRpm - ROULETTE_SPEED_RPM) < 10.0f)
+      {
+        // 速度が目標速度に近づいたら、次の状態へ移行
+        _controlState = ControlState::WAITING_TRIGGER1;
+        _speedPid.reset();
+        _speedPid.targetValue(ROULETTE_SPEED_RPM);
+      }
+    }
+    if (_controlState == ControlState::WAITING_TRIGGER1)
+    {
+      // トリガーセンサー1待ち
+      _speedPid.update(_speedRpm);
+      _targetCurrentA = _speedPid.output();
+      if (_triggerSensor1Watcher.isRisingEdge())
+      {
+        _trigger1Time = t0;
+        _targettingPosRev = _posRev + 0.5f; // とりあえず現在位置の0.5回転先をターゲット位置にする
+        _controlState = ControlState::WAITING_TRIGGER2;
+      }
+    }
+    static float _remainingRev = 0;
+    static float _remainingSec = 0;
+    if (_controlState == ControlState::TARGETING || _controlState == ControlState::WAITING_TRIGGER2)
+    {
+      // ターゲット位置に向けて制御中
+      _remainingRev = _targettingPosRev - _posRev;                                 // 目標位置までの残り位置[rev]
+      _remainingSec = (float)(targettingUsec - (t0 - _trigger1Time)) / 1000000.0f; // 目標時間までの残り時間[秒]
+      const float kRpmPerSecA = 1000.0f;                                           // 電流指令値1Aあたりの加速度[rpm/s/A]
+
+      // --- 必要な加速度と電流指令値の計算例 ---
+      if (_remainingSec > 0.01f)
+      {                                             // 残り時間が十分ある場合のみ計算
+        float currentRevPerSec = _speedRpm / 60.0f; // 現在速度[rev/s]
+        // 等加速度運動の公式: x = v0 * t + 0.5 * a * t^2 から a を求める
+        float requiredAcc = 2.0f * (_remainingRev - currentRevPerSec * _remainingSec) / (_remainingSec * _remainingSec); // [rev/s^2]
+        // 加速度[rev/s^2]→[rpm/s^2]に変換
+        float requiredAccRpm = requiredAcc * 60.0f;
+        // 電流指令値に変換（加速度→電流の比例定数で割る）
+        float requiredCurrent = requiredAccRpm / kRpmPerSecA; // [A]
+        // 安全のためクリップ
+        requiredCurrent = std::max(requiredCurrent, -1.0f);
+        requiredCurrent = std::min(requiredCurrent, 1.0f);
+        _targetCurrentA = requiredCurrent;
+      }
+
+      if (_controlState == ControlState::WAITING_TRIGGER2)
+      {
+        // トリガーセンサー2待ち
+        if (_triggerSensor2Watcher.isFallingEdge())
+        {
+          _trigger2Time = t0;
+          _triggerTimeDiff = _trigger2Time - _trigger1Time;
+          _controlState = ControlState::TARGETING;
+        }
+      }
+      if (t0 - _trigger1Time >= targettingUsec)
+      {
+        // トリガーセンサー1から0.3秒後に減速開始
+        _controlState = ControlState::DECELERATING;
+      }
+    }
+    if (_controlState == ControlState::DECELERATING)
+    {
+      // 減速中
+      _targetCurrentA = 0.0f;
+      if (std::fabs(_speedRpm) <= 1.0f)
+      {
+        _controlState = ControlState::IDLE;
+      }
+    }
+    // 電流指令値をローラーに設定
+    _roller.setTargetCurrentA(_targetCurrentA);
+
+    if (_serialOutputEnabled)
+    {
+      logPrintf(_serial,
+                "%lu, ", _loadTimeUs,
+                "%d, ", (int)_controlState,
+                "%.4f,", _targetCurrentA,
+                "%.4f,", _currentA,
+                "%.4f,", _speedRpm,
+                "%.4f,", _posRev,
+                "%.4f,", _targettingPosRev,
+                "%.4f,", _remainingRev,
+                "%.4f,", _remainingSec,
+                "%.4f\r\n", _vinV);
+    }
+
+    _lastPosRev = _posRev;
   }
 
   // @brief 電流制御モードでの制御ステップ
-  void controlStepDirectCurrentMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
+  void controlStepDirectCurrentMode(unsigned long t0, unsigned long stepCount)
   {
     if (stepCount == 0)
     {
@@ -314,36 +521,74 @@ namespace
       _roller.setTargetCurrentA(0.0f);
       _roller.setOutput(1);
     }
-    _vinV = _roller.getVinV();
-    _currentA = _roller.getCurrentA();
-    _speedRpm = _roller.getSpeedRpm();
     _roller.setTargetCurrentA(_targetCurrentA);
     if (_serialOutputEnabled)
     {
       logPrintf(_serial,
-                "%lu, ", dt,
+                "%lu, ", _loadTimeUs,
                 "%.4f,", _targetCurrentA,
+                "%.4f,", _currentA,
+                "%.4f,", _speedRpm,
+                "%.4f,", _posRev,
+                "%.4f\r\n", _vinV);
+    }
+  }
+
+  // @brief 速度制御モードでの制御ステップ
+  void controlStepDirectSpeedMode(unsigned long t0, unsigned long stepCount)
+  {
+    if (stepCount == 0)
+    {
+      // モード変更直後の初期化処理
+      _roller.setOutput(0);
+      _roller.setMode(ROLLER_MODE_SPEED);
+      _roller.setTargetSpeedRpm(0.0f);
+      _roller.setOutput(1);
+    }
+    _roller.setTargetSpeedRpm(_targetSpeedRpm);
+    if (_serialOutputEnabled)
+    {
+      logPrintf(_serial,
+                "%lu, ", _loadTimeUs,
+                "%.4f,", _targetSpeedRpm,
+                "%.4f,", _currentA,
+                "%.4f,", _speedRpm,
+                "%.4f,", _posRev,
+                "%.4f\r\n", _vinV);
+    }
+  }
+
+  // @brief 位置制御モードでの制御ステップ
+  void controlStepDirectPositionMode(unsigned long t0, unsigned long stepCount)
+  {
+    if (stepCount == 0)
+    {
+      // モード変更直後の初期化処理
+      _roller.setOutput(0);
+      _roller.setMode(ROLLER_MODE_POSITION);
+      _roller.setTargetPosRev(_posRev);
+      _roller.setOutput(1);
+    }
+    applyPendingPosPidToRoller();
+    _targetPosRev = calcNearestTargetPosRev(_posRev, _targetAngleRev);
+    _roller.setTargetPosRev(_targetPosRev);
+    if (_serialOutputEnabled)
+    {
+      logPrintf(_serial,
+                "%lu, ", _loadTimeUs,
+                "%.4f,", _targetAngleRev,
+                "%.4f,", _targetPosRev,
+                "%.4f,", _posRev,
                 "%.4f,", _currentA,
                 "%.4f,", _speedRpm,
                 "%.4f\r\n", _vinV);
     }
   }
 
-  // @brief 速度制御モードでの制御ステップ
-  void controlStepDirectSpeedMode(unsigned long t0, unsigned long dt, unsigned long stepCount)
-  {
-  }
-
-  // @brief 位置制御モードでの制御ステップ
-  void controlStepDirectPositionMode(unsigned long t0, unsigned long _dt, unsigned long stepCount)
-  {
-  }
-
   // @brief タスクで一定周期ごとに実行される関数
   void controlStep(void *pvParameters)
   {
     static unsigned long _stepCount = 0;
-    static unsigned long _dt = 0;
     const unsigned long t0 = micros();
     // 制御モードが変わっていたら更新
     if (_controlMode != _lastControlMode)
@@ -352,27 +597,31 @@ namespace
       _lastControlMode = _controlMode;
       _stepCount = 0;
     }
+    // 各種フィードバック値の取得
+    _vinV = _roller.getVinV();
+    _currentA = _roller.getCurrentA();
+    _speedRpm = _roller.getSpeedRpm();
+    _posRev = _roller.getPosRev();
     // 制御モードに応じた制御ステップを実行
     switch (_controlMode)
     {
     case ControlMode::NONE:
-      // 制御なし
-      _roller.setOutput(0);
+      controlStepNoneMode(t0, _stepCount);
       break;
     case ControlMode::ROULETTE_SPEED:
-      controlStepRouletteSpeedMode(t0, _dt, _stepCount);
+      controlStepRouletteSpeedMode(t0, _stepCount);
       break;
     case ControlMode::ROULETTE_CURRENT:
-      controlStepRouletteCurrentMode(t0, _dt, _stepCount);
+      controlStepRouletteCurrentMode(t0, _stepCount);
       break;
     case ControlMode::DIRECT_SPEED:
-      controlStepDirectSpeedMode(t0, _dt, _stepCount);
+      controlStepDirectSpeedMode(t0, _stepCount);
       break;
     case ControlMode::DIRECT_CURRENT:
-      controlStepDirectCurrentMode(t0, _dt, _stepCount);
+      controlStepDirectCurrentMode(t0, _stepCount);
       break;
     case ControlMode::DIRECT_POSITION:
-      controlStepDirectPositionMode(t0, _dt, _stepCount);
+      controlStepDirectPositionMode(t0, _stepCount);
       break;
     default:
       break;
@@ -380,7 +629,7 @@ namespace
 
     _stepCount++;
     const unsigned long t1 = micros();
-    _dt = t1 - t0;
+    _loadTimeUs = t1 - t0;
   }
 
   // @brief タスクで実行される関数
@@ -402,35 +651,35 @@ namespace RouletteControlTask
 {
   void setSpeedPid(float kp, float ki, float kd)
   {
-    auto locked = _speedPidState.lock();
-    locked->params = SpeedPidParams{kp, ki, kd};
+    auto locked = _rollerSpeedPidState.lock();
+    locked->params = RollerPidParams{kp, ki, kd};
     locked->pending = true;
   }
 
   void setSpeedPidKp(float kp)
   {
-    auto locked = _speedPidState.lock();
+    auto locked = _rollerSpeedPidState.lock();
     locked->params.kp = kp;
     locked->pending = true;
   }
 
   void setSpeedPidKi(float ki)
   {
-    auto locked = _speedPidState.lock();
+    auto locked = _rollerSpeedPidState.lock();
     locked->params.ki = ki;
     locked->pending = true;
   }
 
   void setSpeedPidKd(float kd)
   {
-    auto locked = _speedPidState.lock();
+    auto locked = _rollerSpeedPidState.lock();
     locked->params.kd = kd;
     locked->pending = true;
   }
 
   void getSpeedPid(float &kp, float &ki, float &kd)
   {
-    const SpeedPidParams params = _speedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params;
+    const RollerPidParams params = _rollerSpeedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params;
     kp = params.kp;
     ki = params.ki;
     kd = params.kd;
@@ -438,17 +687,68 @@ namespace RouletteControlTask
 
   float getSpeedPidKp()
   {
-    return _speedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params.kp;
+    return _rollerSpeedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params.kp;
   }
 
   float getSpeedPidKi()
   {
-    return _speedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params.ki;
+    return _rollerSpeedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params.ki;
   }
 
   float getSpeedPidKd()
   {
-    return _speedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params.kd;
+    return _rollerSpeedPidState.tryGet().valueOr(DEFAULT_SPEED_PID_STATE).params.kd;
+  }
+
+  void setPosPid(float kp, float ki, float kd)
+  {
+    auto locked = _rollerPosPidState.lock();
+    locked->params = RollerPidParams{kp, ki, kd};
+    locked->pending = true;
+  }
+
+  void setPosPidKp(float kp)
+  {
+    auto locked = _rollerPosPidState.lock();
+    locked->params.kp = kp;
+    locked->pending = true;
+  }
+
+  void setPosPidKi(float ki)
+  {
+    auto locked = _rollerPosPidState.lock();
+    locked->params.ki = ki;
+    locked->pending = true;
+  }
+
+  void setPosPidKd(float kd)
+  {
+    auto locked = _rollerPosPidState.lock();
+    locked->params.kd = kd;
+    locked->pending = true;
+  }
+
+  void getPosPid(float &kp, float &ki, float &kd)
+  {
+    const RollerPidParams params = _rollerPosPidState.tryGet().valueOr(DEFAULT_POS_PID_STATE).params;
+    kp = params.kp;
+    ki = params.ki;
+    kd = params.kd;
+  }
+
+  float getPosPidKp()
+  {
+    return _rollerPosPidState.tryGet().valueOr(DEFAULT_POS_PID_STATE).params.kp;
+  }
+
+  float getPosPidKi()
+  {
+    return _rollerPosPidState.tryGet().valueOr(DEFAULT_POS_PID_STATE).params.ki;
+  }
+
+  float getPosPidKd()
+  {
+    return _rollerPosPidState.tryGet().valueOr(DEFAULT_POS_PID_STATE).params.kd;
   }
 
   void setSerialOutputEnabled(bool enabled)
@@ -506,6 +806,26 @@ namespace RouletteControlTask
     _targetCurrentA = current;
   }
 
+  float getTargetPosRev()
+  {
+    return _targetPosRev;
+  }
+  // _targetPosは取得専用
+  // void setTargetPosRev(float posRev)
+  // {
+  //   _targetPosRev = posRev;
+  // }
+
+  float getTargetAngleRev()
+  {
+    return _targetAngleRev;
+  }
+
+  void setTargetAngleRev(float angleRev)
+  {
+    _targetAngleRev = angleRev;
+  }
+
   void setControlMode(ControlMode mode)
   {
     _controlMode = mode;
@@ -546,8 +866,10 @@ namespace RouletteControlTask
     _triggerSensor2.setup();
     _startSwitch.setup();
     _serial = &serial;
-    _speedPidState.begin();
-    _speedPidState.trySet(DEFAULT_SPEED_PID_STATE);
+    _rollerSpeedPidState.begin();
+    _rollerSpeedPidState.trySet(DEFAULT_SPEED_PID_STATE);
+    _rollerPosPidState.begin();
+    _rollerPosPidState.trySet(DEFAULT_POS_PID_STATE);
     _roller.begin(&Wire, ROLLER_I2C_ADDR, I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ);
     _roller.setOutput(0);
     xTaskCreate(controlTask, "Control", 8 * 1024, nullptr, 2, nullptr);
