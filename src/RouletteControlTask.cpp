@@ -13,6 +13,7 @@
 #include "RouletteCalc.h"
 #include "XSafeVariable.h"
 #include "PID.h"
+#include "M5_EXTIO2.h"
 #include <cmath>
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -80,6 +81,7 @@ namespace
   Stream *_serial = &_nullStream;
 
   UnitRollerWrapper _roller;
+  M5_EXTIO2 _extio;
   // トリガーセンサー1
   DigitalIn _triggerSensor1(5, INPUT_PULLUP);
   DigitalInWatcher _triggerSensor1Watcher(_triggerSensor1, false);
@@ -196,6 +198,7 @@ namespace
   void controlStepNoneMode(unsigned long t0, unsigned long stepCount)
   {
     _roller.setOutput(0);
+    _extio.setAllDigitalOutputs(0xff);
     if (_serialOutputEnabled)
     {
       logPrintf(_serial,
@@ -375,6 +378,7 @@ namespace
     static unsigned long _trigger1Time = 0;          // トリガーセンサー1が反応した時間[us]
     static unsigned long _trigger2Time = 0;          // トリガーセンサー2が反応した時間[us]
     static unsigned long _triggerTimeDiff = 0;       // トリガーセンサー1と2の反応時間差[us]
+    static unsigned long _ledCount = 0;              // LEDの点滅用カウンタ
     static float _targettingPosRev = 0;              // ターゲット位置[rev]
     constexpr unsigned long targettingUsec = 300000; // ターゲット位置に向けて制御する時間[マイクロ秒]
     static PID _speedPid(
@@ -409,6 +413,7 @@ namespace
 
     if (_controlState == ControlState::IDLE)
     {
+      _ledCount = 0; // LED消灯
       if (_startSwitchWatcher.isFallingEdge())
       {
         // スタートスイッチが押されたら加速開始
@@ -444,6 +449,7 @@ namespace
     if (_controlState == ControlState::TARGETING || _controlState == ControlState::WAITING_TRIGGER2)
     {
       // ターゲット位置に向けて制御中
+      _ledCount++;  // LED点滅用カウンタを更新
       _remainingRev = _targettingPosRev - _posRev;                                 // 目標位置までの残り位置[rev]
       _remainingSec = (float)(targettingUsec - (t0 - _trigger1Time)) / 1000000.0f; // 目標時間までの残り時間[秒]
       const float kRpmPerSecA = 1000.0f;                                           // 電流指令値1Aあたりの加速度[rpm/s/A]
@@ -483,6 +489,7 @@ namespace
     if (_controlState == ControlState::DECELERATING)
     {
       // 減速中
+      _ledCount++;  // LED点滅用カウンタを更新
       _targetCurrentA = 0.0f;
       if (std::fabs(_speedRpm) <= 1.0f)
       {
@@ -506,6 +513,8 @@ namespace
                 "%.4f,", _remainingSec,
                 "%.4f\r\n", _vinV);
     }
+    // LED表示
+    _extio.setAllDigitalOutputs(~(_ledCount & 0x000000ffUL));
 
     _lastPosRev = _posRev;
   }
@@ -872,6 +881,9 @@ namespace RouletteControlTask
     _rollerPosPidState.trySet(DEFAULT_POS_PID_STATE);
     _roller.begin(&Wire, ROLLER_I2C_ADDR, I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ);
     _roller.setOutput(0);
+    _extio.begin(&Wire, I2C_SDA_PIN, I2C_SCL_PIN, EXTIO2_DEFAULT_ADDR, false);
+    _extio.setAllPinMode(DIGITAL_OUTPUT_MODE);
+    _extio.setAllDigitalOutputs(0xff);
     xTaskCreate(controlTask, "Control", 8 * 1024, nullptr, 2, nullptr);
     _serial->println("RouletteControlTask started");
   }
