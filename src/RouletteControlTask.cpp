@@ -278,21 +278,21 @@ namespace
       // トリガーセンサー1待ち
       // とりあえずすぐに次の状態へ移行。実際にはトリガーセンサー1の立ち下がりを待つ
       trigger1Time = t0;
-      _controlState = ControlState::WAITING_TRIGGER2;
+      _controlState = ControlState::TARGETING1;
     }
-    if (_controlState == ControlState::WAITING_TRIGGER2)
+    if (_controlState == ControlState::TARGETING1)
     {
       // トリガーセンサー2待ち
       if (_triggerSensor2Watcher.isRisingEdge())
       {
         trigger2Time = t0;
-        _controlState = ControlState::TARGETING;
+        _controlState = ControlState::TARGETING2;
         // 現在の回転方向に最も近い(offset + n×360度)の位置に目標位置を設定
         //        targetPos = nextRevolutionPos(pos, speed >= 0, _targetAngle);
         targetPosRev = _posRev + 1.5f; // とりあえず1回転分先を目標位置にする
       }
     }
-    if (_controlState == ControlState::TARGETING)
+    if (_controlState == ControlState::TARGETING2)
     {
       const uint32_t targetTime = trigger2Time + 300000; // トリガーセンサー2から0.3秒後に停止することを目標とする
       // 目標位置に向けて制御中
@@ -441,12 +441,12 @@ namespace
       {
         _trigger1Time = t0;
         _targettingPosRev = _posRev + 0.5f; // とりあえず現在位置の0.5回転先をターゲット位置にする
-        _controlState = ControlState::WAITING_TRIGGER2;
+        _controlState = ControlState::TARGETING1;
       }
     }
     static float _remainingRev = 0;
     static float _remainingSec = 0;
-    if (_controlState == ControlState::TARGETING || _controlState == ControlState::WAITING_TRIGGER2)
+    if (_controlState == ControlState::TARGETING1 || _controlState == ControlState::TARGETING2)
     {
       // ターゲット位置に向けて制御中
       _ledCount++;  // LED点滅用カウンタを更新
@@ -470,14 +470,14 @@ namespace
         _targetCurrentA = requiredCurrent;
       }
 
-      if (_controlState == ControlState::WAITING_TRIGGER2)
+      if (_controlState == ControlState::TARGETING1)
       {
         // トリガーセンサー2待ち
         if (_triggerSensor2Watcher.isFallingEdge())
         {
           _trigger2Time = t0;
           _triggerTimeDiff = _trigger2Time - _trigger1Time;
-          _controlState = ControlState::TARGETING;
+          _controlState = ControlState::TARGETING2;
         }
       }
       if (t0 - _trigger1Time >= targettingUsec)

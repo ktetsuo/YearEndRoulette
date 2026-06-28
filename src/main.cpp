@@ -105,10 +105,10 @@ namespace
         return "ACCEL";
       case RouletteControlTask::ControlState::WAITING_TRIGGER1:
         return "WAIT1";
-      case RouletteControlTask::ControlState::WAITING_TRIGGER2:
-        return "WAIT2";
-      case RouletteControlTask::ControlState::TARGETING:
-        return "TARGET";
+      case RouletteControlTask::ControlState::TARGETING1:
+        return "TARGET1";
+      case RouletteControlTask::ControlState::TARGETING2:
+        return "TARGET2";
       case RouletteControlTask::ControlState::DECELERATING:
         return "DECEL";
       default:

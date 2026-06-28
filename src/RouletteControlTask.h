@@ -24,8 +24,8 @@ namespace RouletteControlTask
     IDLE,             // 待機状態
     ACCELERATING,     // 加速中
     WAITING_TRIGGER1, // トリガーセンサー1待ち
-    WAITING_TRIGGER2, // トリガーセンサー2待ち
-    TARGETING,        // 目標位置に向けて制御中
+    TARGETING1,       // 目標位置に向けて制御中（トリガーセンサー2待ち）
+    TARGETING2,       // 目標位置に向けて制御中（トリガーセンサー2反応後）
     DECELERATING,     // 減速中
   };
 
