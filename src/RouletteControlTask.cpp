@@ -502,7 +502,7 @@ namespace
     if (_serialOutputEnabled)
     {
       logPrintf(_serial,
-                "%lu, ", _loadTimeUs,
+                "@%lu, ", _loadTimeUs,
                 "%d, ", (int)_controlState,
                 "%.4f,", _targetCurrentA,
                 "%.4f,", _currentA,
