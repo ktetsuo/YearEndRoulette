@@ -100,7 +100,7 @@ namespace
 
   XSafeVariable<RollerPidState> _rollerSpeedPidState; // 速度PIDの状態
   XSafeVariable<RollerPidState> _rollerPosPidState;   // 位置PIDの状態
-  volatile bool _serialOutputEnabled = false;
+  volatile bool _serialOutputEnabled = true; // シリアル出力有効フラグ
   volatile unsigned long _loadTimeUs = 0; // 制御ループの処理時間[us]
   volatile float _vinV = 0.0f;            // 電源電圧[V]
   volatile float _targetSpeedRpm = 0;     // 速度指令値[rpm]
@@ -112,7 +112,7 @@ namespace
   volatile float _targetAngleRev = 0.0f;  // ターゲット角度[rev]
 
   volatile ControlMode _lastControlMode = ControlMode::NONE;
-  volatile ControlMode _controlMode = ControlMode::DIRECT_CURRENT;
+  volatile ControlMode _controlMode = ControlMode::ROULETTE_CURRENT;
 
   ////////////////////////////////////////////////////////////////////////////////
   // 関数
@@ -380,7 +380,7 @@ namespace
     static unsigned long _triggerTimeDiff = 0;       // トリガーセンサー1と2の反応時間差[us]
     static unsigned long _ledCount = 0;              // LEDの点滅用カウンタ
     static float _targettingPosRev = 0;              // ターゲット位置[rev]
-    constexpr unsigned long targettingUsec = 300000; // ターゲット位置に向けて制御する時間[マイクロ秒]
+    constexpr unsigned long targettingUsec = 275000; // ターゲット位置に向けて制御する時間[マイクロ秒]
     static PID _speedPid(
         DEFAULT_SPEED_PID_PARAMS.kp,
         DEFAULT_SPEED_PID_PARAMS.ki,
@@ -414,9 +414,9 @@ namespace
     if (_controlState == ControlState::IDLE)
     {
       _ledCount = 0; // LED消灯
-      if (_startSwitchWatcher.isFallingEdge())
+      if (_startSwitchWatcher.isFallingEdge() || _triggerSensor1Watcher.isFallingEdge())
       {
-        // スタートスイッチが押されたら加速開始
+        // スタートスイッチが押されたかトリガーセンサー1がONになったら加速開始
         _controlState = ControlState::ACCELERATING;
         _targetCurrentA = 0.5f; // とりあえず0.5Aにする
       }
