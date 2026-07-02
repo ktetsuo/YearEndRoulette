@@ -106,6 +106,11 @@ namespace RouletteControlTask
   void setControlMode(ControlMode mode);
   /// @brief 制御モードを取得する
   ControlMode getControlMode();
+
+  /// @brief 目標の数字を設定する
+  void setTargetNumber(int number);
+  /// @brief 目標の数字を取得する
+  int getTargetNumber();
 }
 
 #endif // __ROULETTE_CONTROL_TASK_H__

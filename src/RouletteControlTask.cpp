@@ -110,6 +110,7 @@ namespace
   volatile float _posRev = 0.0f;          // 位置フィードバック値[rev]
   volatile float _targetPosRev = 0.0f;    // ターゲット位置[rev]
   volatile float _targetAngleRev = 0.0f;  // ターゲット角度[rev]
+  volatile int _targetNumber = 0;         // 目標の数字（1～8）
 
   volatile ControlMode _lastControlMode = ControlMode::NONE;
   volatile ControlMode _controlMode = ControlMode::ROULETTE_CURRENT;
@@ -843,6 +844,16 @@ namespace RouletteControlTask
   ControlMode getControlMode()
   {
     return _controlMode;
+  }
+
+  void setTargetNumber(int number)
+  {
+    _targetNumber = number;
+  }
+
+  int getTargetNumber()
+  {
+    return _targetNumber;
   }
 
   const char *controlModeToString(ControlMode mode)

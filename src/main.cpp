@@ -28,6 +28,7 @@ namespace
   ValueCommand<float> _cmdSpeedRpm("spd", RouletteControlTask::getTargetSpeedRpm, RouletteControlTask::setTargetSpeedRpm);
   ValueCommand<float> _cmdTargetCurrentA("cur", RouletteControlTask::getTargetCurrentA, RouletteControlTask::setTargetCurrentA);
   ValueCommand<float> _cmdTargetAngleRev("ang", RouletteControlTask::getTargetAngleRev, RouletteControlTask::setTargetAngleRev);
+  ValueCommand<int> _cmdTargetNumber("num", RouletteControlTask::getTargetNumber, RouletteControlTask::setTargetNumber);
   class ControlModeCommand : public IConsoleCommand
   {
   public:
