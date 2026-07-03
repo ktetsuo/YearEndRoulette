@@ -148,7 +148,7 @@ void setup() {
 }
 
 void loop() {
-  const unsigned long t0 = micros();
+  const unsigned long t0 = millis();
   _console.run();
 
   const float vinV = RouletteControlTask::getVinV();
@@ -185,7 +185,7 @@ void loop() {
   // 過去の制御ループの実行時間の最大値を表示
   const unsigned long intervalMsMax = *std::max_element(_intervalMsBuffer.begin(), _intervalMsBuffer.end());
   _canvas.setCursor(lcdWidth - 1 - fontWidth * 4, lcdHeight - 1 - fontHeight);
-  _canvas.printf("%4lu", _intervalMsBuffer);
+  _canvas.printf("%4lu", intervalMsMax);
 
   _canvas.pushSprite(0, 0);
 
