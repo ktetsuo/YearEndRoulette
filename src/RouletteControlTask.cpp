@@ -483,7 +483,7 @@ namespace
       }
       if (t0 - _trigger1Time >= targettingUsec)
       {
-        // トリガーセンサー1から0.3秒後に減速開始
+        // トリガーセンサー1から一定時間経過後に減速開始
         _controlState = ControlState::DECELERATING;
       }
     }
