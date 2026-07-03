@@ -4,6 +4,7 @@
 #include "XSafeStream.h"
 #include "SerialConsole.h"
 #include "ValueCommand.h"
+#include "SimpleCommand.h"
 #include "RotationBuffer.h"
 #include <BleSerial.h>
 #include <array>
@@ -29,6 +30,11 @@ namespace
   ValueCommand<float> _cmdTargetCurrentA("cur", RouletteControlTask::getTargetCurrentA, RouletteControlTask::setTargetCurrentA);
   ValueCommand<float> _cmdTargetAngleRev("ang", RouletteControlTask::getTargetAngleRev, RouletteControlTask::setTargetAngleRev);
   ValueCommand<int> _cmdTargetNumber("num", RouletteControlTask::getTargetNumber, RouletteControlTask::setTargetNumber);
+  ValueCommand<unsigned long> _cmdTargettingMsec("tgtmsec", RouletteControlTask::getTargettingMsec, RouletteControlTask::setTargettingMsec);
+  SimpleCommand _cmdResetZeroPos("resetpos", []() {
+    RouletteControlTask::resetZeroPosRev();
+  });
+
   class ControlModeCommand : public IConsoleCommand
   {
   public:
@@ -84,14 +90,19 @@ namespace
     }
   };
   ControlModeCommand _cmdControlMode;
-  const std::array<const IConsoleCommand *, 8> _commands = {
+  const std::array<const IConsoleCommand *, 13> _commands = {
       &_cmdSpeedPidKp,
       &_cmdSpeedPidKi,
       &_cmdSpeedPidKd,
+      &_cmdPosPidKp,
+      &_cmdPosPidKi,
+      &_cmdPosPidKd,
       &_cmdControlLog,
       &_cmdSpeedRpm,
       &_cmdTargetCurrentA,
       &_cmdTargetAngleRev,
+      &_cmdTargettingMsec,
+      &_cmdResetZeroPos,
       &_cmdControlMode,
   };
   SerialConsole _console(_safeSerial, _commands);

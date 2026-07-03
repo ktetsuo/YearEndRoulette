@@ -111,6 +111,9 @@ namespace
   volatile float _targetPosRev = 0.0f;    // ターゲット位置[rev]
   volatile float _targetAngleRev = 0.0f;  // ターゲット角度[rev]
   volatile int _targetNumber = 0;         // 目標の数字（1～8）
+  volatile float _zeroPosRev = 0.0f;      // 位置のゼロ点（8と1の間）[rev]
+  volatile unsigned long _targettingMsec = 275; // ターゲット位置に向けて制御する時間[ms]
+  volatile float _targettingSec = _targettingMsec / 1000.0f; // ターゲット位置に向けて制御する時間[秒]
 
   volatile ControlMode _lastControlMode = ControlMode::NONE;
   volatile ControlMode _controlMode = ControlMode::ROULETTE_CURRENT;
@@ -193,6 +196,28 @@ namespace
       diff += 1.0f; // ターゲット角度の方が現在位置より小さい場合、差が-0.5を下回るときは逆回りの方が近い
     }
     return posRev + diff; // 現在位置に差を加えることで、最も近いターゲット位置を計算
+  }
+
+  /// @brief 回転位置を0.0～1.0の範囲に正規化する
+  float normalizeRev(float rev)
+  {
+    return rev - std::floor(rev);
+  }
+
+  /// @brief 数字の中心に対応する角度を計算する
+  /// @param number ルーレットの数字（1～8）
+  /// @return 角度[rev]
+  /// @details ルーレットの数字に対応する角度は、1～8の数字に対して0.0～1.0の範囲で割り当てられる
+  float numberToAngleRev(int number)
+  {
+    if (number < 1 || number > 8)
+    {
+      return 0.0f;
+    }
+    // 0.5を引くことで数字の中心に対応する角度を計算し、ゼロ点を加算
+    const float angle = (number - 0.5f) / 8.0f + _zeroPosRev;
+    // 角度を0.0～1.0の範囲に正規化
+    return normalizeRev(angle);
   }
 
   /// @brief 制御なしモードでの制御ステップ
@@ -380,8 +405,9 @@ namespace
     static unsigned long _trigger2Time = 0;          // トリガーセンサー2が反応した時間[us]
     static unsigned long _triggerTimeDiff = 0;       // トリガーセンサー1と2の反応時間差[us]
     static unsigned long _ledCount = 0;              // LEDの点滅用カウンタ
-    static float _targettingPosRev = 0;              // ターゲット位置[rev]
-    constexpr unsigned long targettingUsec = 275000; // ターゲット位置に向けて制御する時間[マイクロ秒]
+    static float _targettingPosRev = 0.0f;           // ターゲット位置[rev]
+    static float _remainingRev = 0.0f;               // 目標位置までの残り位置[rev]
+    static float _remainingSec = 0.0f;               // 目標時間までの残り時間[秒]
     static PID _speedPid(
         DEFAULT_SPEED_PID_PARAMS.kp,
         DEFAULT_SPEED_PID_PARAMS.ki,
@@ -391,6 +417,7 @@ namespace
         1.0f, // outputMax
         0.0f  // targetValue
     );
+    const float currentRevPerSec = _speedRpm / 60.0f; // 現在速度[rev/s]
 
     if (stepCount == 0)
     {
@@ -402,11 +429,13 @@ namespace
       _controlState = ControlState::IDLE;
       _trigger1Time = 0;
       _trigger2Time = 0;
+      _triggerTimeDiff = 0;
+      _ledCount = 0;
+      _targettingPosRev = 0.0f;
+      _remainingRev = 0.0f;
+      _remainingSec = 0.0f;
       _lastPosRev = _posRev;
     }
-
-    const float posDiffRev = _posRev - _lastPosRev;
-    const bool serialOutputEnabled = _serialOutputEnabled;
 
     _triggerSensor1Watcher.update();
     _triggerSensor2Watcher.update();
@@ -415,6 +444,12 @@ namespace
     if (_controlState == ControlState::IDLE)
     {
       _ledCount = 0; // LED消灯
+      _trigger1Time = 0;
+      _trigger2Time = 0;
+      _triggerTimeDiff = 0;
+      _targettingPosRev = 0.0f;
+      _remainingRev = 0.0f;
+      _remainingSec = 0.0f;
       if (_startSwitchWatcher.isFallingEdge() || _triggerSensor1Watcher.isFallingEdge())
       {
         // スタートスイッチが押されたかトリガーセンサー1がONになったら加速開始
@@ -440,25 +475,27 @@ namespace
       _targetCurrentA = _speedPid.output();
       if (_triggerSensor1Watcher.isRisingEdge())
       {
+        // トリガーセンサー1が反応した時間を記録
         _trigger1Time = t0;
-        _targettingPosRev = _posRev + 0.5f; // とりあえず現在位置の0.5回転先をターゲット位置にする
+        // 現在の速度で、トリガーセンサー1から一定時間後に到達する予想位置を求める
+        const float estimatedReachPosRev = _posRev + currentRevPerSec * _targettingSec;
+        // ターゲット位置を、目標の数字に対応する角度に最も近い位置に設定
+        _targettingPosRev = calcNearestTargetPosRev(estimatedReachPosRev, numberToAngleRev(_targetNumber));
+        // 次の状態へ移行
         _controlState = ControlState::TARGETING1;
       }
     }
-    static float _remainingRev = 0;
-    static float _remainingSec = 0;
     if (_controlState == ControlState::TARGETING1 || _controlState == ControlState::TARGETING2)
     {
       // ターゲット位置に向けて制御中
       _ledCount++;  // LED点滅用カウンタを更新
       _remainingRev = _targettingPosRev - _posRev;                                 // 目標位置までの残り位置[rev]
-      _remainingSec = (float)(targettingUsec - (t0 - _trigger1Time)) / 1000000.0f; // 目標時間までの残り時間[秒]
+      _remainingSec = _targettingSec - (float)(t0 - _trigger1Time) / 1000000.0f; // 目標時間までの残り時間[秒]
       const float kRpmPerSecA = 1000.0f;                                           // 電流指令値1Aあたりの加速度[rpm/s/A]
 
       // --- 必要な加速度と電流指令値の計算例 ---
       if (_remainingSec > 0.01f)
-      {                                             // 残り時間が十分ある場合のみ計算
-        float currentRevPerSec = _speedRpm / 60.0f; // 現在速度[rev/s]
+      {
         // 等加速度運動の公式: x = v0 * t + 0.5 * a * t^2 から a を求める
         float requiredAcc = 2.0f * (_remainingRev - currentRevPerSec * _remainingSec) / (_remainingSec * _remainingSec); // [rev/s^2]
         // 加速度[rev/s^2]→[rpm/s^2]に変換
@@ -481,7 +518,7 @@ namespace
           _controlState = ControlState::TARGETING2;
         }
       }
-      if (t0 - _trigger1Time >= targettingUsec)
+      if (t0 - _trigger1Time >= _targettingMsec * 1000)
       {
         // トリガーセンサー1から一定時間経過後に減速開始
         _controlState = ControlState::DECELERATING;
@@ -854,6 +891,23 @@ namespace RouletteControlTask
   int getTargetNumber()
   {
     return _targetNumber;
+  }
+
+  void resetZeroPosRev()
+  {
+    // 現在位置をゼロ点として設定（0.0～1.0の範囲に正規化）
+    _zeroPosRev = normalizeRev(_posRev);
+  }
+
+  void setTargettingMsec(unsigned long msec)
+  {
+    _targettingMsec = msec;
+    _targettingSec = msec / 1000.0f;
+  }
+
+  unsigned long getTargettingMsec()
+  {
+    return _targettingMsec;
   }
 
   const char *controlModeToString(ControlMode mode)

@@ -111,6 +111,14 @@ namespace RouletteControlTask
   void setTargetNumber(int number);
   /// @brief 目標の数字を取得する
   int getTargetNumber();
+
+  /// @brief 狙い制御時間を設定する [msec]
+  void setTargettingMsec(unsigned long msec);
+  /// @brief 狙い制御時間を取得する [msec]
+  unsigned long getTargettingMsec();
+
+  /// @brief 現在位置をゼロ点として設定する
+  void resetZeroPosRev();
 }
 
 #endif // __ROULETTE_CONTROL_TASK_H__
