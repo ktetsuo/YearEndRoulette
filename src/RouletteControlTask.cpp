@@ -114,6 +114,7 @@ namespace
   volatile float _zeroPosRev = 0.0f;      // 位置のゼロ点（8と1の間）[rev]
   volatile unsigned long _targettingMsec = 275; // ターゲット位置に向けて制御する時間[ms]
   volatile float _targettingSec = _targettingMsec / 1000.0f; // ターゲット位置に向けて制御する時間[秒]
+  volatile int _currentNumber = 0;        // 現在の数字（1～8）
 
   volatile ControlMode _lastControlMode = ControlMode::NONE;
   volatile ControlMode _controlMode = ControlMode::ROULETTE_CURRENT;
@@ -214,11 +215,34 @@ namespace
     {
       return 0.0f;
     }
-    // 0.5を引くことで数字の中心に対応する角度を計算し、ゼロ点を加算
-    const float angle = (number - 0.5f) / 8.0f + _zeroPosRev;
+    // 数字の増加方向を位置の正方向と逆にするため、ゼロ点から減算する
+    const float angle = _zeroPosRev - (number - 0.5f) / 8.0f;
     // 角度を0.0～1.0の範囲に正規化
     return normalizeRev(angle);
   }
+
+  /// @brief 現在の位置から対応する数字を計算する
+  /// @param posRev 現在の位置[rev]
+  /// @return ルーレットの数字（1～8）
+  /// @details 現在の位置に対応する数字は、0.0～1.0の範囲で割り当てられた8つの数字に対応する
+  int posRevToNumber(float posRev)
+  {
+    // 数字の増加方向を位置の正方向と逆にするため、ゼロ点からの逆向き差分を使う
+    float normalizedPos = normalizeRev(_zeroPosRev - posRev);
+    // 0.0～1.0の範囲を8等分して、対応する数字を計算
+    int number = static_cast<int>(normalizedPos * 8.0f) + 1;
+    // 数字が1～8の範囲に収まるように調整
+    if (number < 1)
+    {
+      number = 1;
+    }
+    else if (number > 8)
+    {
+      number = 8;
+    }
+    return number;
+  }
+
 
   /// @brief 制御なしモードでの制御ステップ
   void controlStepNoneMode(unsigned long t0, unsigned long stepCount)
@@ -237,6 +261,7 @@ namespace
                 "%.2f,", _posRev,
                 "%.2f,", _speedRpm,
                 "%.2f,", _currentA,
+                "%d,", _currentNumber,
                 "%.2f\r\n", _vinV);
     }
   }
@@ -649,6 +674,7 @@ namespace
     _currentA = _roller.getCurrentA();
     _speedRpm = _roller.getSpeedRpm();
     _posRev = _roller.getPosRev();
+    _currentNumber = posRevToNumber(_posRev);
     // 制御モードに応じた制御ステップを実行
     switch (_controlMode)
     {
@@ -899,6 +925,11 @@ namespace RouletteControlTask
     _zeroPosRev = normalizeRev(_posRev);
   }
 
+  float getZeroPosRev()
+  {
+    return _zeroPosRev;
+  }
+
   void setTargettingMsec(unsigned long msec)
   {
     _targettingMsec = msec;
@@ -908,6 +939,11 @@ namespace RouletteControlTask
   unsigned long getTargettingMsec()
   {
     return _targettingMsec;
+  }
+
+  int getCurrentNumber()
+  {
+    return _currentNumber;
   }
 
   const char *controlModeToString(ControlMode mode)
