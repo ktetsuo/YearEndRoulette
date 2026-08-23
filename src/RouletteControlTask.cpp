@@ -52,9 +52,9 @@ namespace
 
   // Rollerの速度制御のPIDの初期ゲイン
   static constexpr RollerPidParams DEFAULT_SPEED_PID_PARAMS = {
-      10.0f, // P
+      0.0005f, // P
       0.0f,  // I
-      0.2f,  // D
+      0.000002f,  // D
   };
   static constexpr RollerPidState DEFAULT_SPEED_PID_STATE = {
       DEFAULT_SPEED_PID_PARAMS,
@@ -438,7 +438,7 @@ namespace
         DEFAULT_SPEED_PID_PARAMS.ki,
         DEFAULT_SPEED_PID_PARAMS.kd,
         CONTROL_PERIOD_SEC,
-        0.0f, // outputMin
+        -1.0f, // outputMin
         1.0f, // outputMax
         0.0f  // targetValue
     );
