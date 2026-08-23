@@ -110,7 +110,7 @@ namespace
   volatile float _posRev = 0.0f;          // 位置フィードバック値[rev]
   volatile float _targetPosRev = 0.0f;    // ターゲット位置[rev]
   volatile float _targetAngleRev = 0.0f;  // ターゲット角度[rev]
-  volatile int _targetNumber = 0;         // 目標の数字（1～8）
+  volatile int _targetNumber = 1;         // 目標の数字（1～8）
   volatile float _zeroPosRev = 0.0f;      // 位置のゼロ点（8と1の間）[rev]
   volatile unsigned long _targettingMsec = 275; // ターゲット位置に向けて制御する時間[ms]
   volatile float _targettingSec = _targettingMsec / 1000.0f; // ターゲット位置に向けて制御する時間[秒]

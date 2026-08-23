@@ -90,7 +90,7 @@ namespace
     }
   };
   ControlModeCommand _cmdControlMode;
-  const std::array<const IConsoleCommand *, 13> _commands = {
+  const std::array<const IConsoleCommand *, 14> _commands = {
       &_cmdSpeedPidKp,
       &_cmdSpeedPidKi,
       &_cmdSpeedPidKd,
@@ -101,6 +101,7 @@ namespace
       &_cmdSpeedRpm,
       &_cmdTargetCurrentA,
       &_cmdTargetAngleRev,
+      &_cmdTargetNumber,
       &_cmdTargettingMsec,
       &_cmdResetZeroPos,
       &_cmdControlMode,
